@@ -5,8 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "corrsplit"
 version = "0.2.0"
-description = "更正单拆批审批分析（只读）与三表仓的版本化发布、账单交付"
+description = "更正单拆批审批分析（只读）、三表仓版本化发布/账单交付与本地收款对账"
 requires-python = ">=3.8"
 
 [tool.setuptools]
 packages = ["corrsplit"]
+
+[project.scripts]
+corrsplit = "corrsplit.cli:main"

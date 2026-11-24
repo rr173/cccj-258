@@ -1,0 +1,11 @@
+{
+  "bill_version": 0,
+  "batch_id": "receipts-2026-01-demo",
+  "receipts": [
+    {"receipt_no": "R-0001", "payer_id": 1, "period": "2026-01", "invoice_no": "INV-1", "cents": 600},
+    {"receipt_no": "R-0002", "payer_id": 1, "period": "2026-01", "invoice_no": "INV-1", "cents": 400},
+    {"receipt_no": "R-0003", "payer_id": 2, "period": "2026-01", "invoice_no": "INV-9", "cents": 800},
+    {"receipt_no": "R-0004", "payer_id": 1, "period": "2026-02", "invoice_no": "INV-3", "cents": 500},
+    {"receipt_no": "R-0005", "payer_id": 999, "period": "2026-01", "invoice_no": "INV-GHOST", "cents": 250}
+  ]
+}

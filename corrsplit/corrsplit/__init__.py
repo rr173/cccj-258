@@ -40,16 +40,24 @@ from .core import (
     minimal_closure,
     run,
 )
-from . import billing
+from . import billing, reconciliation
 from .billing import (
     BillingError,
     NotARepository,
+    ReceiptConflict,
+    ReceiptVersionConflict,
     Repository,
     RepositoryExists,
     UnknownVersion,
     VersionConflict,
 )
 from .billing import Refusal as BillingRefusal
+from .reconciliation import (
+    ReconciliationReport,
+    import_receipts,
+    list_receipts,
+    reconcile,
+)
 
 __all__ = [
     "Analyzer",
@@ -61,6 +69,13 @@ __all__ = [
     "minimal_closure",
     "run",
     "billing",
+    "reconciliation",
+    "import_receipts",
+    "reconcile",
+    "list_receipts",
+    "ReconciliationReport",
+    "ReceiptConflict",
+    "ReceiptVersionConflict",
     "Repository",
     "BillingError",
     "BillingRefusal",

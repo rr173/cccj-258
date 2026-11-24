@@ -1,0 +1,8 @@
+{
+  "bill_version": 0,
+  "batch_id": "receipts-conflict-demo",
+  "receipts": [
+    {"receipt_no": "R-0001", "payer_id": 1, "period": "2026-01", "invoice_no": "INV-1", "cents": 650},
+    {"receipt_no": "R-NEW", "payer_id": 1, "period": "2026-01", "invoice_no": "INV-2", "cents": 10}
+  ]
+}

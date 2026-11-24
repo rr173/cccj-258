@@ -1,6 +1,6 @@
-# corrsplit —— 更正单拆批审批分析（只读）+ 三表仓版本化发布与账单交付
+# corrsplit —— 更正单拆批审批分析（只读）+ 三表仓版本化发布、账单交付与本地收款对账
 
-本仓库提供两件事：
+本仓库提供三件事：
 
 1. **只读分析器**（`corrsplit.core`）：输入当前仓表、表间约束与完整更正单，
    输出**不可再拆的同批组**与**必要的先后关系**，并支持两类审批查询
@@ -8,6 +8,9 @@
 2. **发布流程**（`corrsplit.billing`）：把审批通过的批次真正发布到本地仓库，
    维护版本化的仓表与账单，向账单消费者只交付**本次需要替换或撤销的账单**，
    无需下载整仓。
+3. **本地收款对账**（`corrsplit.reconciliation`）：财务导入带账单版本的银行
+   到账回执后，按完整发票键查看应收、累计到账、未结金额，并标出未匹配和超收。
+   回执幂等、只追加，导入整批原子；对账结果始终按当前账单实时计算。
 
 ## 只读分析器
 
@@ -302,17 +305,199 @@ repo.dump_warehouse()    # 导出当前仓表
 均已在抛出前完整回滚。`Repository` 非线程安全，并发发布请每个线程/进程
 各自 `open` 同一目录。
 
+---
+
+# 本地收款对账：导入回执并核对发票
+
+收款对账复用上面的版本化仓库（`目录/billing.db`），不需要另起服务。新初始化的
+仓库会自动包含 `receipt` 表；用旧版本代码初始化的仓库在第一次 `Repository.open`
+或执行对账命令时，会幂等补上该表和只追加触发器。
+
+## 回执批次格式
+
+一批回执必须声明它对应的当前账单版本，并包含若干收款记录：
+
+```json
+{
+  "bill_version": 0,
+  "batch_id": "receipts-2026-01-demo",
+  "receipts": [
+    {"receipt_no": "R-0001", "payer_id": 1, "period": "2026-01",
+     "invoice_no": "INV-1", "cents": 600},
+    {"receipt_no": "R-0002", "payer_id": 1, "period": "2026-01",
+     "invoice_no": "INV-1", "cents": 400}
+  ]
+}
+```
+
+- `bill_version`（也接受 `base_version` / `version`）必须等于仓库当前版本；
+- `receipt_no` 是全局、稳定、非空的回执编号；
+- 发票完整键 = `(payer_id, period, invoice_no)`，相同发票号在不同付款方或月份
+  下分别对账；
+- `cents` 必须是大于 `0` 的整数分；
+- 付款方或发票当前不存在时，回执仍原样保存，不会被丢弃或挪到其他发票。
+  输入也接受 `payments`/`records`、`month`、`receipt_id`、`paid_cents` 等常见
+  近义字段名。
+
+## 命令行入口
+
+```bash
+cd corrsplit
+
+# 先有一个账单仓库（若已 init 可跳过）
+python -m corrsplit init /tmp/corrsplit-recon examples/billing_init.json --pretty
+
+# 导入回执；import-receipts 可简写为 receipts <repo> <file>
+python -m corrsplit import-receipts /tmp/corrsplit-recon \
+  examples/receipts_batch.json --pretty
+
+# 查询当前对账结果；reconciliation 是同义命令
+python -m corrsplit reconcile /tmp/corrsplit-recon --pretty
+python -m corrsplit receipts /tmp/corrsplit-recon --pretty
+
+# 查看原始回执
+python -m corrsplit receipt-list /tmp/corrsplit-recon --pretty
+```
+
+导入成功结果给出 `inserted_count`、`duplicate_count` 和 `total_receipts`。
+退出码沿用仓库约定：版本不符为 `4`，回执内容冲突或清单不合法为 `2`，
+仓库/IO 问题为 `1`。
+
+## Python 入口
+
+```python
+from corrsplit import Repository, ReceiptConflict, VersionConflict
+
+repo = Repository.open("/tmp/corrsplit-recon")
+repo.import_receipts(0, receipts, batch_id="receipts-2026-01-demo")
+report = repo.reconcile()
+
+for row in report["items"]:
+    print(row["payer_id"], row["period"], row["invoice_no"],
+          row["receivable_cents"], row["received_cents"],
+          row["outstanding_cents"], row["status"])
+
+report["invoices"]             # 仅当前仍存在的发票
+report["unmatched_receipts"]   # 无当前发票的原始回执（扁平列表）
+report["overpaid_invoices"]    # 超收发票分组
+report["summary"]              # 各状态数量与金额合计
+repo.close()
+```
+
+也可用模块级函数直接传仓库目录或已打开的 `Repository`：
+
+```python
+from corrsplit.reconciliation import import_receipts, reconcile
+
+import_receipts("/tmp/corrsplit-recon", doc)
+report = reconcile("/tmp/corrsplit-recon")
+```
+
+Python 行对象支持常见别名读取：`row["month"]`、`row["due_cents"]`、
+`row["paid_cents"]`、`row["balance_cents"]`；状态对象与 `"paid"`、
+`"partial_payment"`、`"未匹配"` 等常见别名/中文值相等。CLI 的 JSON 默认展开
+这些别名字段；加 `--canonical-keys` 可只输出规范键。
+
+## 金额与状态口径
+
+| 概念 | 当前实现 |
+| --- | --- |
+| 应收 `receivable_cents` | 当前 `charge → contract → payer` 归属后，按 `(payer_id, period, invoice_no)` 对 `cents` 原值求和；负数不剔除，零合计但仍有归属明细的发票也存在 |
+| 已收 `received_cents` | 该完整发票键下所有**不同回执编号**的金额之和；同号同内容重导不重复计算 |
+| 未结 `outstanding_cents` | `receivable_cents - received_cents`，超收时为负数 |
+| `unmatched` | 当前没有该完整发票键，但存在回执；完整外连接行中应收按零行合计显示为 `0`、未结为 `-received_cents`，同时在 `unmatched_receipts` 给出原始回执 |
+| `unpaid` | 发票存在且已收为 `0`；零金额发票无回款时也按“未付款”处理 |
+| `partial` | `0 < received_cents < receivable_cents` |
+| `settled` | `received_cents == receivable_cents`（状态也兼容别名义 `paid`） |
+| `overpaid` | `received_cents > receivable_cents` |
+
+## 幂等、冲突与原子性
+
+- 同一 `receipt_no` 再次导入且规范内容
+  `(payer_id, period, invoice_no, cents)` 完全相同时跳过，不增加到账额；
+- 编号已存在但上述任一字段不同，或同一批次内同号内容不同，抛
+  `ReceiptConflict` / CLI `kind="receipt_conflict"`，整批回滚；
+- 批次版本不等于当前账单版本时抛 `VersionConflict` / CLI 退出码 `4`，整批不写入；
+- 结构校验、版本检查、全部编号冲突检查和插入都在一个 `BEGIN IMMEDIATE`
+  SQLite 事务中；拒绝或 COMMIT 前进程退出都会回滚，不会留下部分新回执；
+- 不保存可能过期的“对账结果表”。每次查询按当前仓表重算应收，因此账单更正
+  发布后，金额变化、付款方迁移或发票消失会立即反映到新对账结果；
+- 回执保存在原始 `(payer_id, period, invoice_no)` 下，账单发布逻辑不会改写
+  或删除它们；数据库触发器也禁止 `UPDATE/DELETE receipt`。失去当前发票的款项
+  自动变为 `unmatched`。
+
+## 可复现小型样例
+
+仓库自带 `examples/receipts_batch.json`，配合 `billing_init.json` 可一次看到
+部分付款、未付款、结清、超收和未匹配：
+
+```bash
+rm -rf /tmp/corrsplit-recon
+python3 -m corrsplit init /tmp/corrsplit-recon examples/billing_init.json
+python3 -m corrsplit import-receipts /tmp/corrsplit-recon \
+  examples/receipts_batch.json
+python3 -m corrsplit reconcile /tmp/corrsplit-recon --canonical-keys
+```
+
+`items` 中对应结果为：
+
+| payer | period | invoice | 应收 | 已收 | 未结 | status |
+| ---: | --- | --- | ---: | ---: | ---: | --- |
+| 1 | 2026-01 | INV-1 | 1500 | 1000 | 500 | partial |
+| 1 | 2026-01 | INV-2 | -200 | 0 | -200 | unpaid |
+| 1 | 2026-02 | INV-3 | 300 | 500 | -200 | overpaid |
+| 2 | 2026-01 | INV-9 | 800 | 800 | 0 | settled |
+| 999 | 2026-01 | INV-GHOST | 0 | 250 | -250 | unmatched |
+
+重复导入同一文件会显示 `inserted_count: 0, duplicate_count: 5`，到账合计不变：
+
+```bash
+python3 -m corrsplit import-receipts /tmp/corrsplit-recon \
+  examples/receipts_batch.json
+```
+
+`examples/receipts_conflict.json` 把 `R-0001` 的金额从 `600` 改成 `650`，并夹带
+一条新回执 `R-NEW`。该命令以退出码 `2` 拒绝；随后查询 `receipt-list` 仍只有
+原来的 5 条，`R-NEW` 不存在：
+
+```bash
+python3 -m corrsplit import-receipts /tmp/corrsplit-recon \
+  examples/receipts_conflict.json
+echo $?   # 2
+```
+
+继续发布现有账单更正，可以看到“回执不动、当前对账更新”：
+
+```bash
+python3 -m corrsplit publish /tmp/corrsplit-recon examples/billing_batch1.json
+python3 -m corrsplit reconcile /tmp/corrsplit-recon --canonical-keys
+
+python3 -m corrsplit publish /tmp/corrsplit-recon examples/billing_batch2.json
+python3 -m corrsplit reconcile /tmp/corrsplit-recon --canonical-keys
+```
+
+第一版更正把合同 `12` 从付款方 `2` 改挂到付款方 `1`：`INV-9` 发票移动到
+`(1, 2026-01, INV-9)` 且未付款，而 `R-0003` 仍留在 `(2, 2026-01, INV-9)`，
+显示 `unmatched`。第二版更正删除 `INV-3` 的明细后，`R-0004` 仍留在
+`(1, 2026-02, INV-3)`，同样变为 `unmatched`。此时再用版本 0 的回执批次导入会
+得到退出码 `4` 和 `kind: version_conflict`；把批次版本改为当前版本后，同号同
+内容仍按重复回执处理，不会重复计款。
+
 ## 目录结构与测试
 
 ```
-corrsplit/            # 包：core.py（只读分析）、billing.py（版本化发布）、cli.py（命令行）
-tests/test_corrsplit.py # 39 个测试：分析语义、拒绝、随机实例穷举等价、性能
-tests/test_billing.py   # 44 个测试：初始化、发布、交付、拒绝回滚、并发、崩溃原子性、
-                      #   读取范围、随机批次 vs 全量重算等价、CLI 全流程
-examples/               # 分析示例 + billing_init/batch1/batch2/batch_invalid 发布示例
+corrsplit/                  # 包：core.py（只读分析）、billing.py（版本化发布）、
+                            #   reconciliation.py（回执导入/对账）、cli.py（命令行）
+tests/test_corrsplit.py     # 39 个测试：分析语义、拒绝、随机实例穷举等价、性能
+tests/test_billing.py       # 44 个测试：初始化、发布、交付、拒绝回滚、并发、崩溃原子性、
+                            #   读取范围、随机批次 vs 全量重算等价、CLI 全流程
+tests/test_reconciliation.py # 对账测试：五种状态、完整发票键、幂等/冲突、版本拒绝、
+                            #   账单更正后重算、崩溃回滚、CLI 退出码
+examples/                   # 分析示例 + billing_* 发布示例 + receipts_* 回执示例
 ```
 
-运行测试：`python3 tests/test_corrsplit.py`、`python3 tests/test_billing.py`。
+运行测试：`python3 tests/test_corrsplit.py`、`python3 tests/test_billing.py`、
+`python3 tests/test_reconciliation.py`。
 其中只读分析的随机测试在小实例上枚举**全部**审批子集，验证图判定与直接
 全约束求值完全一致；发布流程的随机测试连续发布 80 个构造合法的随机批次
 （穿插非法批次），逐版本与"全量重算 + 差分"的参考实现比对账单、变更与

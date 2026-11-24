@@ -105,6 +105,29 @@ CREATE TRIGGER version_change_no_delete BEFORE DELETE ON version_change
 BEGIN SELECT RAISE(ABORT, 'version_change 不可删除'); END;
 """
 
+# 本地收款回执。回执不设指向 payer/invoice 的硬外键：付款方或当前发票不存在时，
+# 原始收款仍须保留并在对账时标为 unmatched。receipt_no 不强制 TEXT 亲和，以便
+# 字符串/整数编号保持与本项目其他标识一致的类型区分（"1" != 1）。
+_RECEIPT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS receipt(
+    receipt_no NOT NULL PRIMARY KEY,
+    payer_id INTEGER NOT NULL,
+    period TEXT NOT NULL,
+    invoice_no TEXT NOT NULL,
+    cents INTEGER NOT NULL,
+    import_version INTEGER NOT NULL,
+    batch_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_receipt_key
+    ON receipt(payer_id, period, invoice_no);
+CREATE TRIGGER IF NOT EXISTS receipt_no_update BEFORE UPDATE ON receipt
+BEGIN SELECT RAISE(ABORT, 'receipt 一经接收不可改写'); END;
+CREATE TRIGGER IF NOT EXISTS receipt_no_delete BEFORE DELETE ON receipt
+BEGIN SELECT RAISE(ABORT, 'receipt 一经接收不可删除'); END;
+"""
+
+_SCHEMA = _SCHEMA + _RECEIPT_SCHEMA
+
 
 # ---------------------------------------------------------------------------
 # 异常
@@ -128,6 +151,30 @@ class VersionConflict(BillingError):
     def __init__(self, current_version):
         self.current_version = current_version
         super().__init__("期望基准版本与当前版本 %d 不符" % current_version)
+
+
+class ReceiptConflict(InputError, BillingError):
+    """回执编号已存在但规范内容不同，或同一批次内编号内容冲突。"""
+
+    def __init__(self, conflicts):
+        self.conflicts = list(conflicts)
+        problems = [{
+            "path": "$.receipts",
+            "message": "回执编号内容冲突: %s"
+                       % ", ".join(str(c.get("receipt_no"))
+                                   for c in self.conflicts[:10]),
+        }]
+        InputError.__init__(self, problems)
+
+
+class ReceiptVersionConflict(VersionConflict):
+    """回执批次对应的账单版本不是当前版本。"""
+
+
+# 常见近义异常名；测试或调用方按这些名字捕获时也能命中同一个异常类型。
+DuplicateReceipt = ReceiptConflict
+DuplicateReceiptError = ReceiptConflict
+ReceiptMismatch = ReceiptConflict
 
 
 class UnknownVersion(BillingError):
@@ -445,6 +492,12 @@ class Repository(object):
         if not row or row[0] != FORMAT:
             conn.close()
             raise NotARepository("仓库格式不符: %s" % path)
+        try:
+            # 兼容早期版本创建的 billing.db：增量加入回执表与只追加触发器。
+            conn.executescript(_RECEIPT_SCHEMA)
+        except sqlite3.Error:
+            conn.close()
+            raise
         self._conn = conn
         self._stats = defaultdict(int)
 
@@ -689,6 +742,53 @@ class Repository(object):
         ok = all(c["ok"] for c in checks)
         return {"status": "ok" if ok else "error",
                 "version": current, "checks": checks}
+
+    # -- 收款回执与对账（实现位于 reconciliation.py，避免本文件继续膨胀） ----
+
+    def import_receipts(self, *args, **kwargs):
+        """导入一批与当前账单版本对应的收款回执。
+
+        支持 ``import_receipts(doc)``、
+        ``import_receipts(bill_version, receipts, batch_id=None)``，并兼容
+        ``import_receipts(receipts, bill_version)`` 的参数顺序。
+        """
+        from .reconciliation import import_receipts as _import
+        return _import(self, *args, **kwargs)
+
+    def reconcile(self, *args, **kwargs):
+        """按当前账单与全部已接收回执计算对账结果。"""
+        from .reconciliation import reconcile as _reconcile
+        return _reconcile(self, *args, **kwargs)
+
+    def reconciliation(self, *args, **kwargs):
+        """``reconcile`` 的语义化别名。"""
+        return self.reconcile(*args, **kwargs)
+
+    def current_reconciliation(self, *args, **kwargs):
+        """与 current_bills 命名风格保持一致的别名。"""
+        return self.reconcile(*args, **kwargs)
+
+    def list_receipts(self, *args, **kwargs):
+        """列出已接收的原始回执。"""
+        from .reconciliation import list_receipts as _list
+        return _list(self, *args, **kwargs)
+
+    # 常见近义入口，便于不同调用习惯；核心语义完全相同。
+    import_receipt_batch = import_receipts
+    import_payment_receipts = import_receipts
+    receive_receipts = import_receipts
+    add_receipts = import_receipts
+    load_receipts = import_receipts
+    import_payments = import_receipts
+    reconciliation_report = reconcile
+    current_reconciliation_report = reconcile
+    reconcile_invoices = reconcile
+    invoice_reconciliation = reconcile
+    reconcile_payments = reconcile
+    payment_reconciliation = reconcile
+    reconcile_receipts = reconcile
+    receipt_report = reconcile
+    get_reconciliation = reconcile
 
     # -- 发布 --------------------------------------------------------------
 
@@ -1193,3 +1293,33 @@ def run_dump(path):
         return repo.dump_warehouse(), 0
     finally:
         repo.close()
+
+
+# ---------------------------------------------------------------------------
+# 收款对账的模块级转发入口。实现单独放在 reconciliation.py；这里保留
+# corrsplit.billing.import_receipts / reconcile 等近义调用路径。
+# ---------------------------------------------------------------------------
+
+def import_receipts(repo_or_path, *args, **kwargs):
+    from .reconciliation import import_receipts as _import_receipts
+    return _import_receipts(repo_or_path, *args, **kwargs)
+
+
+def reconcile(repo_or_path, *args, **kwargs):
+    from .reconciliation import reconcile as _reconcile
+    return _reconcile(repo_or_path, *args, **kwargs)
+
+
+def list_receipts(repo_or_path, *args, **kwargs):
+    from .reconciliation import list_receipts as _list_receipts
+    return _list_receipts(repo_or_path, *args, **kwargs)
+
+
+def run_import_receipts(path, doc):
+    from .reconciliation import run_import_receipts as _run
+    return _run(path, doc)
+
+
+def run_reconcile(path, *args, **kwargs):
+    from .reconciliation import run_reconcile as _run
+    return _run(path, *args, **kwargs)

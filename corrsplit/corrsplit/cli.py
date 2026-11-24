@@ -16,6 +16,12 @@
     python -m corrsplit verify  仓库目录 [--pretty]
     python -m corrsplit dump    仓库目录 [--pretty]
 
+本地收款对账：
+    python -m corrsplit import-receipts 仓库目录 回执批次.json [--pretty]
+    python -m corrsplit reconcile       仓库目录 [--pretty]
+    python -m corrsplit receipts        仓库目录 [回执批次.json] [--pretty]
+    python -m corrsplit receipt-list    仓库目录 [--pretty]
+
 输入路径为 "-" 时从标准输入读取。退出码：
     0 正常（包括 check/evaluate 判定为不合法——那是一个“答案”）；
     2 模式、仓表、更正单或参数不合法；
@@ -28,7 +34,7 @@ import argparse
 import json
 import sys
 
-from . import billing, core
+from . import billing, core, reconciliation
 
 _ANALYSIS_COMMANDS = ("analyze", "validate", "check", "closure", "evaluate")
 
@@ -47,9 +53,23 @@ def _emit_error(kind, message):
 
 
 def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    else:
+        argv = list(argv)
+
+    # 同时支持自然的嵌套写法：corrsplit receipts import REPO FILE。
+    if len(argv) >= 2 and argv[0] in ("receipt", "receipts", "payments"):
+        if argv[1] == "import":
+            argv = ["import-receipts"] + argv[2:]
+        elif argv[1] in ("list", "list-receipts"):
+            argv = ["receipt-list"] + argv[2:]
+        elif argv[1] in ("reconcile", "reconciliation"):
+            argv = ["reconcile"] + argv[2:]
+
     parser = argparse.ArgumentParser(
         prog="corrsplit",
-        description="更正单拆批审批分析（只读）与三表仓的版本化发布、账单交付")
+        description="更正单拆批审批分析、三表仓版本化发布/账单交付与本地收款对账")
     sub = parser.add_subparsers(dest="command", metavar="命令", required=True)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--pretty", action="store_true", help="缩进美化输出")
@@ -92,6 +112,46 @@ def main(argv=None):
                        help="导出当前仓表（核对用）")
     p.add_argument("repo", help="仓库目录")
 
+    p = sub.add_parser(
+        "import-receipts", parents=[common],
+        aliases=["import_receipts", "receipt-import", "receipts-import",
+                 "import-payments", "import"],
+        help="导入与当前账单版本对应的收款回执（整批原子）")
+    p.add_argument("repo", help="仓库目录")
+    p.add_argument("input", help="回执批次 JSON 文件路径，'-' 表示标准输入")
+
+    p = sub.add_parser(
+        "reconcile", parents=[common],
+        aliases=["reconciliation", "reconcile-receipts",
+                 "payment-reconciliation"],
+        help="按当前账单查询发票应收、已收、未结及未匹配回执")
+    p.add_argument("repo", help="仓库目录")
+    p.add_argument("--status", help="只输出指定状态（unmatched/unpaid/partial/settled/overpaid）")
+    p.add_argument("--unmatched-only", action="store_true",
+                   help="只输出未匹配项")
+    p.add_argument("--canonical-keys", action="store_true",
+                   help="不展开 due_cents/paid_cents/balance_cents 等兼容别名")
+
+    p = sub.add_parser(
+        "receipt-list", parents=[common],
+        aliases=["list-receipts", "receipts-list"],
+        help="列出已接收的原始回执")
+    p.add_argument("repo", help="仓库目录")
+
+    # 更口语化的入口：给了 JSON 就导入，没给就输出对账单。
+    p = sub.add_parser(
+        "receipts", parents=[common],
+        aliases=["receipt", "payments"],
+        help="不带 input 时查询对账；带 input 时导入回执批次")
+    p.add_argument("repo", help="仓库目录")
+    p.add_argument("input", nargs="?",
+                   help="可选：回执批次 JSON；省略时查询当前对账结果")
+    p.add_argument("--status", help="只输出指定状态")
+    p.add_argument("--unmatched-only", action="store_true",
+                   help="只输出未匹配项")
+    p.add_argument("--canonical-keys", action="store_true",
+                   help="不展开兼容别名字段")
+
     args = parser.parse_args(argv)
 
     try:
@@ -111,6 +171,30 @@ def main(argv=None):
             result, code = billing.run_changes(args.repo, args.version)
         elif args.command == "verify":
             result, code = billing.run_verify(args.repo)
+        elif args.command in ("import-receipts", "import_receipts",
+                              "receipt-import", "receipts-import",
+                              "import-payments", "import"):
+            result, code = reconciliation.run_import_receipts(
+                args.repo, _load_json(args.input))
+        elif args.command in ("reconcile", "reconciliation",
+                              "reconcile-receipts",
+                              "payment-reconciliation"):
+            result, code = reconciliation.run_reconcile(
+                args.repo, status=getattr(args, "status", None),
+                unmatched_only=getattr(args, "unmatched_only", False),
+                expand_aliases=not getattr(args, "canonical_keys", False))
+        elif args.command in ("receipt-list", "list-receipts",
+                              "receipts-list"):
+            result, code = reconciliation.run_list_receipts(args.repo)
+        elif args.command in ("receipts", "receipt", "payments"):
+            if getattr(args, "input", None):
+                result, code = reconciliation.run_import_receipts(
+                    args.repo, _load_json(args.input))
+            else:
+                result, code = reconciliation.run_reconcile(
+                    args.repo, status=getattr(args, "status", None),
+                    unmatched_only=getattr(args, "unmatched_only", False),
+                    expand_aliases=not getattr(args, "canonical_keys", False))
         else:  # dump
             result, code = billing.run_dump(args.repo)
     except (OSError, ValueError) as e:
