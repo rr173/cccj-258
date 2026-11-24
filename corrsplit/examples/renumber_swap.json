@@ -1,0 +1,22 @@
+{
+  "tables": {
+    "item": {
+      "identity": "id",
+      "columns": {"id": "int", "code": "string", "name": "string"},
+      "unique_keys": [["code"]],
+      "references": {}
+    }
+  },
+  "rows": {
+    "item": [
+      {"id": 1, "code": "A-01", "name": "甲"},
+      {"id": 2, "code": "A-02", "name": "乙"}
+    ]
+  },
+  "corrections": [
+    {"id": "swap1", "op": "replace", "table": "item", "row_id": 1,
+     "row": {"id": 1, "code": "A-02", "name": "甲"}},
+    {"id": "swap2", "op": "replace", "table": "item", "row_id": 2,
+     "row": {"id": 2, "code": "A-01", "name": "乙"}}
+  ]
+}

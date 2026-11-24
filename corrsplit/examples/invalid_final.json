@@ -1,0 +1,23 @@
+{
+  "tables": {
+    "master": {
+      "identity": "id",
+      "columns": {"id": "int", "code": "string"},
+      "unique_keys": [["code"]],
+      "references": {}
+    },
+    "detail": {
+      "identity": "id",
+      "columns": {"id": "int", "master_id": "int", "item": "string"},
+      "unique_keys": [],
+      "references": {"master_id": "master"}
+    }
+  },
+  "rows": {
+    "master": [{"id": 1, "code": "M1"}],
+    "detail": [{"id": 10, "master_id": 1, "item": "a"}]
+  },
+  "corrections": [
+    {"id": "del_m1", "op": "delete", "table": "master", "row_id": 1}
+  ]
+}

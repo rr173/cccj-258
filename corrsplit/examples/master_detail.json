@@ -1,0 +1,35 @@
+{
+  "tables": {
+    "master": {
+      "identity": "id",
+      "columns": {"id": "int", "code": "string"},
+      "unique_keys": [["code"]],
+      "references": {}
+    },
+    "detail": {
+      "identity": "id",
+      "columns": {"id": "int", "master_id": "int", "item": "string"},
+      "unique_keys": [["master_id", "item"]],
+      "references": {"master_id": "master"}
+    }
+  },
+  "rows": {
+    "master": [
+      {"id": 1, "code": "M1"},
+      {"id": 2, "code": "M2"}
+    ],
+    "detail": [
+      {"id": 10, "master_id": 1, "item": "a"},
+      {"id": 11, "master_id": 2, "item": "b"}
+    ]
+  },
+  "corrections": [
+    {"id": "add_m3", "op": "add", "table": "master",
+     "row": {"id": 3, "code": "M3"}},
+    {"id": "add_d12", "op": "add", "table": "detail",
+     "row": {"id": 12, "master_id": 3, "item": "c"}},
+    {"id": "repoint_d11", "op": "replace", "table": "detail", "row_id": 11,
+     "row": {"id": 11, "master_id": 3, "item": "b"}},
+    {"id": "del_m2", "op": "delete", "table": "master", "row_id": 2}
+  ]
+}
