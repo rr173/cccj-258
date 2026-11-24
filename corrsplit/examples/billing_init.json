@@ -1,0 +1,24 @@
+{
+  "batch_id": "init-2026-01",
+  "rows": {
+    "payer": [
+      {"id": 1},
+      {"id": 2}
+    ],
+    "contract": [
+      {"id": 10, "code": "C-A", "payer_id": 1},
+      {"id": 11, "code": "C-B", "payer_id": 1},
+      {"id": 12, "code": "C-C", "payer_id": 2},
+      {"id": 13, "code": "C-D", "payer_id": null}
+    ],
+    "charge": [
+      {"id": 100, "contract_id": 10, "period": "2026-01", "invoice_no": "INV-1", "cents": 1000},
+      {"id": 101, "contract_id": 11, "period": "2026-01", "invoice_no": "INV-1", "cents": 500},
+      {"id": 102, "contract_id": 11, "period": "2026-01", "invoice_no": "INV-2", "cents": -200},
+      {"id": 103, "contract_id": 12, "period": "2026-01", "invoice_no": "INV-9", "cents": 800},
+      {"id": 104, "contract_id": 10, "period": "2026-02", "invoice_no": "INV-3", "cents": 300},
+      {"id": 105, "contract_id": null, "period": "2026-01", "invoice_no": "INV-X", "cents": 999},
+      {"id": 106, "contract_id": 13, "period": "2026-01", "invoice_no": "INV-Y", "cents": 777}
+    ]
+  }
+}

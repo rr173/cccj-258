@@ -1,0 +1,14 @@
+{
+  "base_version": 1,
+  "batch_id": "batch-002",
+  "corrections": [
+    {"id": "swap_a", "op": "replace", "table": "contract", "row_id": 10,
+     "row": {"id": 10, "code": "C-B", "payer_id": 1}},
+    {"id": "swap_b", "op": "replace", "table": "contract", "row_id": 11,
+     "row": {"id": 11, "code": "C-A", "payer_id": 1}},
+    {"id": "del_c104", "op": "delete", "table": "charge", "row_id": 104},
+    {"id": "del_c107", "op": "delete", "table": "charge", "row_id": 107},
+    {"id": "add_c108", "op": "add", "table": "charge",
+     "row": {"id": 108, "contract_id": 12, "period": "2026-03", "invoice_no": "INV-4", "cents": 250}}
+  ]
+}

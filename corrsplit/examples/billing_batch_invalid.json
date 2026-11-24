@@ -1,0 +1,7 @@
+{
+  "base_version": 2,
+  "batch_id": "batch-003-bad",
+  "corrections": [
+    {"id": "del_c10", "op": "delete", "table": "contract", "row_id": 10}
+  ]
+}

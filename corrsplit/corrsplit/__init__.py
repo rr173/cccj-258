@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""corrsplit —— 更正单拆批审批分析（只读）。
+"""corrsplit —— 更正单拆批审批分析（只读）+ 三表仓的版本化发布与账单交付。
 
-本地可调用入口：
+只读分析入口：
 
     from corrsplit import Analyzer, analyze_document, check_stage, \
         minimal_closure, evaluate_stage
@@ -14,6 +14,20 @@
 
 构造 Analyzer 时若输入不合法抛 InputError；若初始或全部更正后的仓表
 不合法抛 Refusal（拒绝拆批并定位冲突）。
+
+发布流程入口（corrsplit.billing）：
+
+    from corrsplit import Repository
+
+    repo = Repository.init("仓库目录", rows)        # 初始化工作库与版本 0
+    repo = Repository.open("仓库目录")              # 打开已有仓库
+    repo.publish(base_version, corrections)         # 发布一批更正，交付账单变更
+    repo.current_bills()                            # 带版本的当前账单
+    repo.changes(version)                           # 重读某次成功发布的变更
+    repo.verify()                                   # 复核：约束/重算/回放/版本链
+
+发布时版本不符抛 VersionConflict，整批应用后仓表不合法抛 BillingRefusal
+（均已完整回滚）；输入不合法抛 InputError。
 """
 
 from .core import (
@@ -26,6 +40,16 @@ from .core import (
     minimal_closure,
     run,
 )
+from . import billing
+from .billing import (
+    BillingError,
+    NotARepository,
+    Repository,
+    RepositoryExists,
+    UnknownVersion,
+    VersionConflict,
+)
+from .billing import Refusal as BillingRefusal
 
 __all__ = [
     "Analyzer",
@@ -36,6 +60,14 @@ __all__ = [
     "evaluate_stage",
     "minimal_closure",
     "run",
+    "billing",
+    "Repository",
+    "BillingError",
+    "BillingRefusal",
+    "NotARepository",
+    "RepositoryExists",
+    "UnknownVersion",
+    "VersionConflict",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

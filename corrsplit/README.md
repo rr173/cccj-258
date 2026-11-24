@@ -1,14 +1,25 @@
-# corrsplit —— 更正单拆批审批分析（只读）
+# corrsplit —— 更正单拆批审批分析（只读）+ 三表仓版本化发布与账单交付
+
+本仓库提供两件事：
+
+1. **只读分析器**（`corrsplit.core`）：输入当前仓表、表间约束与完整更正单，
+   输出**不可再拆的同批组**与**必要的先后关系**，并支持两类审批查询
+   （`check` / `closure`）。不修改任何数据。
+2. **发布流程**（`corrsplit.billing`）：把审批通过的批次真正发布到本地仓库，
+   维护版本化的仓表与账单，向账单消费者只交付**本次需要替换或撤销的账单**，
+   无需下载整仓。
+
+## 只读分析器
 
 更正一套主档和明细时，整张更正单一次装入是合规的，但审批人希望拆成小批。
-本工具是**只读**分析器：输入当前仓表、表间约束与完整更正单，输出
+只读分析器输入当前仓表、表间约束与完整更正单，输出
 **不可再拆的同批组**与**必要的先后关系**，并支持两类审批查询：
 
 - 任意点选一组更正，判定它是不是一个**可合法发布的阶段**（`check`）；
 - 对点选的若干更正，给出**包含它们的最小合法集合**，补齐的每项都能沿
   证据追溯回请求（`closure`）。
 
-工具不修改任何数据，不自动级联、不补行；所有结论只来自输入的清单本身。
+分析器不修改任何数据，不自动级联、不补行；所有结论只来自输入的清单本身。
 
 ## 模型与约定
 
@@ -102,7 +113,7 @@ python -m corrsplit validate 输入.json            # 仅校验输入与前置�
 
 退出码：`0` 正常（包括 check/evaluate 判定为不合法——那是一个答案）；
 `2` 模式/仓表/清单不合法；`3` 初始或全部更正后的仓表不合法（拒绝拆批）；
-`1` 其他错误。
+`4` 发布版本不符；`1` 其他错误。
 
 ## Python 入口
 
@@ -152,14 +163,157 @@ analyzer.evaluate(["del_m1"])       # 直接全约束求值（与 check 互为�
 - 字段类型仅支持 `int` / `string`（空值通用）。
 - 行身份不可变；`replace` 为整行替换。
 
+---
+
+# 发布流程：三表仓的版本化发布与账单交付（corrsplit.billing）
+
+结算同事用只读分析器确定哪些更正可以同批审批后，用本模块把批准批次
+**真正发布到本地仓库**；账单消费者按版本只接收本次需要替换或撤销的账单，
+不用再下载整仓。
+
+## 模型（仅三张表）
+
+- `payer(id)`：付款方。`id` 是不可更改的整数行身份。
+- `contract(id, code, payer_id)`：合同。`code` 非空且唯一；`payer_id` 可空，
+  非空时须指向存在的付款方。
+- `charge(id, contract_id, period, invoice_no, cents)`：计费明细。
+  `contract_id` 可空，非空时须指向存在的合同；`period` 为有效的
+  `YYYY-MM` 月份；`invoice_no` 为非空字符串；`cents` 为有符号整数分；
+  这三个字段都不能为 null。
+
+**账单**：键 = (付款方行身份, 月份)。每条明细沿合同找到付款方后才计入账单，
+链上任一引用为空就不计入。账单值 = **净额**（所有归属明细的分值相加，
+不去掉负数）+ **不同 `invoice_no` 的数量**。同号明细可来自不同合同：金额
+都计入，票号在同一账单内只计一次。还有归属明细、但净额为零的账单仍然存在。
+改合同归属时，未直接更正的明细也随合同从旧付款方迁出、计入新付款方；同一批
+若还改了这些明细，以整批前后实际归属为准，每条明细在各自状态只计一次。
+
+仓库 = 一个目录，内含单个 SQLite 库文件 `billing.db`（仓表 + 当前账单 +
+各版本变更）。**更正语义与只读分析器一致**：每行至多一条更正，新增 `add` /
+删除 `delete` / 整行替换 `replace`（不得改变行身份），不自动补更正。
+
+## 快速上手（命令行）
+
+```bash
+cd corrsplit   # 包所在目录（或设置 PYTHONPATH 指向它）
+
+# 1) 初始化：用一份完整的三表数据建立工作库及版本 0 的账单（全量扫描底稿）
+python -m corrsplit init /tmp/repo examples/billing_init.json --pretty
+
+# 2) 发布：给出预期基准版本和一批已选好的更正，成功则产生下一版本
+#    并交付该版本的账单变更
+python -m corrsplit publish /tmp/repo examples/billing_batch1.json --pretty
+python -m corrsplit publish /tmp/repo examples/billing_batch2.json --pretty
+
+# 3) 读取：带版本的当前账单；按成功版本重新读取该次变更
+python -m corrsplit bills   /tmp/repo --pretty
+python -m corrsplit changes /tmp/repo 1 --pretty
+
+# 4) 验证：仓表约束复核 + 账单全量重算比对 + 逐版本变更回放 + 版本链连续性
+python -m corrsplit verify  /tmp/repo --pretty
+python -m corrsplit dump    /tmp/repo --pretty   # 导出当前仓表（核对用）
+```
+
+初始化输入：`{"batch_id": 可选, "rows": {"payer": [...], "contract": [...],
+"charge": [...]}}`。批次输入：`{"base_version": 预期基准版本,
+"batch_id": 可选, "corrections": [与分析器相同的更正条目]}`。
+样例见 `examples/billing_*.json`：
+
+- `billing_init.json`：2 付款方、4 合同、7 明细，覆盖同号跨合同、负数、
+  空链（不计入）等情形；版本 0 交付 3 张账单的 upsert。
+- `billing_batch1.json`：合同改挂付款方（未直接更正的明细随之迁移，
+  旧账单撤销）+ 明细改金额 + 同票号新增（票号不重复计）。
+- `billing_batch2.json`：两条合同**同批互换 code**（合法换号，整批落库后
+  才核对，不受中间状态影响；对账单无影响，故该部分不交付）+ 删除使一张
+  账单撤销 + 新增一张账单。
+- `billing_batch_invalid.json`：删除仍被明细引用的合同——整批后仓表不合法，
+  拒绝并回滚（退出码 3）。
+
+## 发布语义
+
+- 每次成功发布产生**下一个版本**（当前版本 + 1），交付该版本的账单变更：
+  - **upsert**：新增账单，以及金额或票数变化后仍存在的账单——交付完整新值
+    `{"kind":"upsert","payer_id","period","net_cents","invoice_count"}`；
+  - **revoke**：不再有归属明细的旧账单——只交付撤销键
+    `{"kind":"revoke","payer_id","period"}`；
+  - 账单值未变就不交付；允许没有账单变更的成功版本（如纯换号批）。
+- **拒绝**（不产生新版本，不留任何痕迹）：
+  - 期望基准版本与当前版本不符（`version_conflict`，退出码 4）；
+  - 应用整批后仓表不合法（`invalid_batch_state`，退出码 3）——整批先全部
+    落库再统一核对约束，因此批内合法换号不会因逐条写入的中间状态被拒绝；
+  - 清单本身不合法（`invalid_input`，退出码 2）。
+- **原子性**：更正后的仓表、当前账单、该版本的变更在同一个 SQLite 事务内
+  生效；拒绝或进程意外退出后都看不到一半的新数据（崩溃测试见
+  `tests/test_billing.py::TestCrashSafety`）。
+- **并发**：发布在 `BEGIN IMMEDIATE` 写锁内比对版本号，一个版本只能被一批
+  发布推进；并发提交同一基准版本时恰有一个成功，另一个只会看到版本不符，
+  无法覆盖别人已成功发布的结果。
+- **不可改写**：`version_log` / `version_change` 由数据库触发器保护，
+  后续发布不能改写旧变更；`changes` 按版本重读的内容与发布时交付的逐字节
+  一致。
+
+## 小批发布的读取范围（性能设计）
+
+全量初始化可以扫描底稿；之后的小批发布**不整仓重读、不扫描无关合同的
+明细、不重算整张受影响账单**。发布所读的业务数据限于：
+
+| 数据 | 定位方式 |
+| --- | --- |
+| 本批行的改前状态 | 按行身份点查 |
+| 约束核对所需的关联行/占用记录 | `code` 唯一占用、`payer_id`/`contract_id` 索引、被删 payer/contract 的引用行 |
+| 前后归属可能改变的明细 | 本批直接更正的明细 + `payer_id` 发生变化的合同名下的明细（`contract_id` 索引） |
+| 直接涉及的账单与票号状态 | 按 (付款方, 月份[, 票号]) 点查，按增量套用 |
+
+账单内部维护票号多重集合（`invoice_no` → 归属明细数），交付的票数即集合
+大小；增量套用只触及变化的票号，**同一账单汇集再多未变合同也无需重算**。
+读取整个当前账单视图（`bills`）与复核（`verify`）不受此限制。
+每次发布的结果中带 `reads` 统计（按表的读取行数），可直接核对读取规模；
+`tests/test_billing.py::TestScopedReads` 在 3 万条明细的仓上验证小批发布
+的读取量与仓规模无关。
+
+## 验证结果
+
+`verify` 做四项独立复核（任一不过则整体失败，退出码 1）：
+
+1. `warehouse_constraints`：当前仓表满足全部约束（全量复核）；
+2. `bills_recomputed`：由仓表全量重算的账单与增量维护的账单状态
+   （净额、明细数、票号多重集合）完全一致；
+3. `changes_replay`：从版本 0 起逐版本回放已交付的变更，恰好重建当前
+   账单视图——交付给消费者的变更流是完备的；
+4. `version_chain`：版本链 0..当前版本 连续无缺口。
+
+## Python 入口（发布）
+
+```python
+from corrsplit import Repository, VersionConflict, BillingRefusal
+
+repo = Repository.init("仓库目录", rows)   # rows = {"payer": [...], ...}
+repo = Repository.open("仓库目录")
+result = repo.publish(base_version, corrections, batch_id=None)
+#   -> {"status":"ok","version","changes":[...],"summary":{...},"reads":{...}}
+repo.current_bills()     # {"version": v, "bills": [...]}
+repo.changes(version)    # 重读该次成功发布的变更（含批次内容）
+repo.verify()            # 四项复核
+repo.dump_warehouse()    # 导出当前仓表
+```
+
+版本不符抛 `VersionConflict`；整批后仓表不合法抛 `BillingRefusal`
+（`kind="invalid_batch_state"`，带冲突定位）；清单不合法抛 `InputError`；
+均已在抛出前完整回滚。`Repository` 非线程安全，并发发布请每个线程/进程
+各自 `open` 同一目录。
+
 ## 目录结构与测试
 
 ```
-corrsplit/            # 包：core.py（模型+算法）、cli.py（命令行）
-tests/test_corrsplit.py # 39 个测试：语义、拒绝、随机实例穷举等价、性能
-examples/               # 换号对调、主从联动、互不依赖、最终态不合法示例
+corrsplit/            # 包：core.py（只读分析）、billing.py（版本化发布）、cli.py（命令行）
+tests/test_corrsplit.py # 39 个测试：分析语义、拒绝、随机实例穷举等价、性能
+tests/test_billing.py   # 44 个测试：初始化、发布、交付、拒绝回滚、并发、崩溃原子性、
+                      #   读取范围、随机批次 vs 全量重算等价、CLI 全流程
+examples/               # 分析示例 + billing_init/batch1/batch2/batch_invalid 发布示例
 ```
 
-运行测试：`python tests/test_corrsplit.py`（其中随机测试在小实例上枚举
-**全部**审批子集，验证图判定与直接全约束求值完全一致，并验证闭包最小性；
-性能测试用 2.5 万条更正验证长清单下不枚举子集、不做两两比较）。
+运行测试：`python3 tests/test_corrsplit.py`、`python3 tests/test_billing.py`。
+其中只读分析的随机测试在小实例上枚举**全部**审批子集，验证图判定与直接
+全约束求值完全一致；发布流程的随机测试连续发布 80 个构造合法的随机批次
+（穿插非法批次），逐版本与"全量重算 + 差分"的参考实现比对账单、变更与
+仓表，并复核 `verify`。

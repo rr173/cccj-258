@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "corrsplit"
-version = "0.1.0"
-description = "更正单拆批审批分析（只读）：同批组、必要先后关系、阶段合法性判定、最小合法集合"
+version = "0.2.0"
+description = "更正单拆批审批分析（只读）与三表仓的版本化发布、账单交付"
 requires-python = ">=3.8"
 
 [tool.setuptools]

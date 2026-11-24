@@ -1,0 +1,12 @@
+{
+  "base_version": 0,
+  "batch_id": "batch-001",
+  "corrections": [
+    {"id": "repoint_c12", "op": "replace", "table": "contract", "row_id": 12,
+     "row": {"id": 12, "code": "C-C", "payer_id": 1}},
+    {"id": "fix_c102", "op": "replace", "table": "charge", "row_id": 102,
+     "row": {"id": 102, "contract_id": 11, "period": "2026-01", "invoice_no": "INV-2", "cents": -100}},
+    {"id": "add_c107", "op": "add", "table": "charge",
+     "row": {"id": 107, "contract_id": 10, "period": "2026-02", "invoice_no": "INV-3", "cents": 700}}
+  ]
+}
